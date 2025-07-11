@@ -18,14 +18,14 @@ Este proyecto es una aplicación de preguntas y respuestas basada en contenidos 
 1. **Clonar el repositorio**
 
    ```bash
-   git clone https://github.com/tu-usuario/tu-repo.git
-   cd tu-repo
+   git clone https://github.com/BluerZu/ChatPDF
+   cd ChatPDF
    ```
 
 2. **Crear y activar un entorno virtual** (recomendado)
 
    ```bash
-   python3.10 -m venv .venv
+   python -m venv .venv
    # En Windows:
    .venv\Scripts\activate
    # En macOS/Linux:
@@ -35,8 +35,8 @@ Este proyecto es una aplicación de preguntas y respuestas basada en contenidos 
 3. **Crear el archivo** `.env` en la raíz del proyecto con las siguientes variables (reemplaza `<apikey>` por tus claves reales):
 
    ```env
-   GOOGLE_API_KEY=<apikey>
-   PINECONE_API_KEY=<apikey>
+   GOOGLE_API_KEY=<api-key>
+   PINECONE_API_KEY=<api-key>
    ```
 
    - `GOOGLE_API_KEY`: tu clave de acceso para Google Generative AI.
