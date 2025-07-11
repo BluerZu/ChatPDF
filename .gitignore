@@ -1,0 +1,40 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Archivos de configuración de entorno
+.env
+
+# Archivos de Python compilados
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+
+# Archivos de logs y bases de datos locales
+*.log
+*.sqlite3
+*.db
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de hash generados por la app
+hashes.txt
+
+# Archivos de Streamlit (configuración de sesión)
+.streamlit/
+
+# Archivos de configuración de IDEs
+.vscode/
+.idea/
+
+# Archivos de Jupyter o notebooks
+*.ipynb_checkpoints
+
+# Archivos temporales
+*.bak
+*.swp
+*.tmp

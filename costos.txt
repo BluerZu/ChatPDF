@@ -1,0 +1,7 @@
+Modelos:
+
+https://ai.google.dev/gemini-api/docs/pricing?hl=es-419
+
+Límites:
+
+https://ai.google.dev/gemini-api/docs/rate-limits?hl=es-419
