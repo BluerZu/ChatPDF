@@ -41,7 +41,7 @@ Este proyecto es una aplicación de preguntas y respuestas basada en contenidos 
 
    - `GOOGLE_API_KEY`: tu clave de acceso para Google Generative AI.
    - `PINECONE_API_KEY`: tu clave de Pinecone.
-   - `PINECONE_API_ENV`: el entorno de Pinecone (por ejemplo, `gcp-starter`, `aws-us-west1`, etc.).
+   
 
 4. **Instalar dependencias**
 
