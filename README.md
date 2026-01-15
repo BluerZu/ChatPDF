@@ -1,8 +1,8 @@
-# 📄 Chat PDF con ChromaDB + Gemini + Streamlit
+# 📄 Chat con Documentos con ChromaDB + Gemini + Streamlit
 
 ## 📖 Introducción
 
-**Chat PDF** es una aplicación web interactiva que te permite "conversar" con tus documentos PDF. Sube cualquier PDF, haz preguntas en lenguaje natural y obtén respuestas precisas basadas en el contenido del documento. 
+**Chat con Documentos** es una aplicación web interactiva que te permite "conversar" con tus documentos. Sube archivos PDF, DOCX, TXT o PPTX, haz preguntas en lenguaje natural y obtén respuestas precisas basadas en el contenido del documento.
 
 La aplicación utiliza técnicas avanzadas de **Retrieval-Augmented Generation (RAG)** para proporcionar respuestas contextuales y precisas, eliminando las "alucinaciones" típicas de los modelos de lenguaje al forzarlos a responder únicamente con información presente en el documento.
 
@@ -130,6 +130,8 @@ pip install -r requirements.txt
 - `streamlit` → Framework web
 - `chromadb` → Base de datos vectorial
 - `pypdf` → Extracción de texto de PDFs
+- `python-docx` → Extracción de texto de DOCX
+- `python-pptx` → Extracción de texto de PPTX
 - `sentence-transformers` → Generación de embeddings locales
 - `google-generativeai` → Cliente de Gemini
 - `python-dotenv` → Gestión de variables de entorno
@@ -165,16 +167,16 @@ http://localhost:8501
 
 ## 📘 Cómo Usar la Aplicación
 
-1. **Sube un PDF** usando el botón de carga
-2. **Procesa el documento** haciendo clic en "📥 Procesar PDF"
+1. **Sube un documento** usando el botón de carga (PDF, DOCX, TXT, PPTX)
+2. **Procesa el documento** haciendo clic en "📥 Procesar Documento"
 3. **Espera** mientras el sistema:
-   - Extrae el texto del PDF
-   - Divide el texto en fragmentos (chunks)
+   - Extrae el texto del documento
+   - Divide el texto en fragmentos (chunks) de 800 caracteres
    - Genera embeddings vectoriales
    - Almacena los datos en ChromaDB
 4. **Haz preguntas** en lenguaje natural sobre el contenido
 5. **Obtén respuestas** precisas basadas en el documento
-6. **Revisa el contexto** usado para generar cada respuesta (sección expandible)
+6. **Revisa el contexto** usado para generar cada respuesta (sección expandible con chunks filtrados por similitud)
 
 ---
 
@@ -193,39 +195,39 @@ graph LR
     I --> J[Respuesta Final]
 ```
 
-1. **Extracción**: PyPDF extrae texto página por página
-2. **Chunking**: Texto dividido en fragmentos de 500 caracteres con solapamiento de 100
+1. **Extracción**: Librerías específicas extraen texto según el tipo de archivo (PDF, DOCX, PPTX, TXT)
+2. **Chunking**: Texto dividido en fragmentos de 800 caracteres con solapamiento de 160
 3. **Embeddings**: Modelo `all-MiniLM-L6-v2` convierte texto a vectores numéricos
 4. **Almacenamiento**: ChromaDB indexa los vectores para búsqueda semántica
-5. **Búsqueda**: Pregunta → Embedding → Top 4 chunks más similares
+5. **Búsqueda**: Pregunta → Embedding → Recupera 10 chunks, filtra por similitud > 0.7
 6. **Generación**: Gemini genera respuesta usando solo el contexto recuperado
 
 ---
 
-## 🔄 Detección de Cambios de PDF
+## 🔄 Detección de Cambios de Archivo
 
 La aplicación incluye un sistema inteligente de detección de cambios que evita el reprocesamiento innecesario de documentos:
 
 ### Hash SHA-256
-Cada vez que subes un PDF, la aplicación genera un **hash SHA-256** único del archivo usando la biblioteca `hashlib` de Python. Este hash actúa como una "huella digital" del documento.
+Cada vez que subes un archivo, la aplicación genera un **hash SHA-256** único del archivo usando la biblioteca `hashlib` de Python. Este hash actúa como una "huella digital" del documento.
 
 **Cómo funciona:**
 ```python
-def hash_pdf(file) -> str:
+def hash_file(file) -> str:
     return hashlib.sha256(file.getvalue()).hexdigest()
 ```
 
 ### Reseteo Automático de Estado
-Si subes un PDF diferente (hash diferente), la aplicación automáticamente:
+Si subes un archivo diferente (hash diferente), la aplicación automáticamente:
 - 🗑️ Limpia la colección de ChromaDB anterior
 - 🔄 Resetea el estado de procesamiento
 - 📥 Te permite procesar el nuevo documento
 
 **Beneficios:**
-- ✅ Evita procesamiento duplicado del mismo PDF
+- ✅ Evita procesamiento duplicado del mismo archivo
 - ✅ Detecta instantáneamente cambios en el documento
 - ✅ Mejora la eficiencia y experiencia del usuario
-- ✅ Previene errores por mezcla de datos de diferentes PDFs
+- ✅ Previene errores por mezcla de datos de diferentes archivos
 
 ---
 
@@ -233,14 +235,15 @@ Si subes un PDF diferente (hash diferente), la aplicación automáticamente:
 
 ### Ajustar el tamaño de chunks
 
-En `app.py` línea 254, puedes modificar:
+En `app.py` línea 102, puedes modificar:
 
 ```python
-chunks = chunk_text(text, chunk_size=500, overlap=100)
+chunk_size = 800
+overlap = 160
 ```
 
-- **`chunk_size`**: Tamaño de cada fragmento (400-800 caracteres recomendado)
-- **`overlap`**: Solapamiento entre fragmentos (10-20% del chunk_size)
+- **`chunk_size`**: Tamaño de cada fragmento (800 caracteres por defecto)
+- **`overlap`**: Solapamiento entre fragmentos (20% del chunk_size)
 
 ### Cambiar el modelo de embeddings
 
@@ -282,9 +285,10 @@ pip install -r requirements.txt
 - Revisa que no haya espacios extra en el archivo `.env`
 - Regenera tu API Key en Google AI Studio
 
-### ❌ Error al procesar PDF
-- Asegúrate de que el PDF no esté protegido con contraseña
-- Verifica que el PDF contiene texto (no es solo imágenes escaneadas)
+### ❌ Error al procesar documento
+- Para PDFs: Asegúrate de que no esté protegido con contraseña y contenga texto (no solo imágenes escaneadas)
+- Para DOCX/PPTX: Verifica que el archivo no esté corrupto
+- Para TXT: Asegúrate de que esté en UTF-8
 
 ### ❌ La app no se abre en el navegador
 ```bash
@@ -319,7 +323,7 @@ Este proyecto está bajo la Licencia MIT. Consulta el archivo `LICENSE` para má
 
 ## 🎯 Próximos Pasos Sugeridos
 
-- [ ] Soporte para diferentes formatos (.docx, .txt, .html)
+- [x] Soporte para diferentes formatos (.docx, .txt, .pptx)
 - [ ] Persistencia de la base de datos entre sesiones
 - [ ] Soporte para documentos escaneados (OCR)
 - [ ] Interfaz multiidioma
