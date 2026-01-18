@@ -7,11 +7,13 @@ import google.generativeai as genai
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+from docx import Document
+from pptx import Presentation
 
 # ============================================================
 # CONFIGURACIÓN GENERAL
 # ============================================================
-st.set_page_config(page_title="Chat PDF con Gemini")
+st.set_page_config(page_title="Chat basado en Documentos con Gemini")
 
 # Carga variables de entorno desde .env
 # Aquí se espera GOOGLE_API_KEY=xxxx
@@ -32,32 +34,48 @@ client = chromadb.Client()
 if "collection" not in st.session_state:
     st.session_state.collection = None
 
-if "pdf_processed" not in st.session_state:
-    st.session_state.pdf_processed = False
+if "file_processed" not in st.session_state:
+    st.session_state.file_processed = False
 
-if "pdf_hash" not in st.session_state:
-    st.session_state.pdf_hash = None
+if "file_hash" not in st.session_state:
+    st.session_state.file_hash = None
 
 # ============================================================
 # FUNCIONES
 # ============================================================
-def hash_pdf(file) -> str:
+def hash_file(file) -> str:
     return hashlib.sha256(file.getvalue()).hexdigest()
 
-def extract_text_from_pdf(pdf_file):
+def extract_text_from_file(file):
     """
-    Extrae texto de un PDF digital (no escaneado).
-    Incluye el número de página como marcador.
+    Extrae texto de un archivo según su tipo.
+    Para PDFs, incluye el número de página como marcador.
     """
-    reader = PdfReader(pdf_file)
-    text = ""
-
-    for i, page in enumerate(reader.pages):
-        content = page.extract_text()
-        if content:
-            text += f"\n[Página {i+1}]\n{content}"
-
-    return text
+    filename = file.name.lower()
+    if filename.endswith('.pdf'):
+        reader = PdfReader(file)
+        text = ""
+        for i, page in enumerate(reader.pages):
+            content = page.extract_text()
+            if content:
+                text += f"\n[Página {i+1}]\n{content}"
+        return text
+    elif filename.endswith('.docx'):
+        doc = Document(file)
+        text = '\n'.join([para.text for para in doc.paragraphs])
+        return text
+    elif filename.endswith('.pptx'):
+        prs = Presentation(file)
+        text = ""
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    text += shape.text + '\n'
+        return text
+    elif filename.endswith('.txt'):
+        return str(file.read(), 'utf-8')
+    else:
+        raise ValueError("Tipo de archivo no soportado. Usa PDF, DOCX, PPTX o TXT.")
 
 
 def chunk_text(text):
@@ -81,8 +99,8 @@ def chunk_text(text):
         - start_index  -> posición donde comienza en el texto original
         - size         -> longitud real del chunk
     """
-    chunk_size = 500 
-    overlap = 100
+    chunk_size = 800
+    overlap = 160
     chunks = []          # Aquí guardaremos todos los fragmentos
     start = 0            # Puntero que indica desde dónde empezamos a cortar
     chunk_id = 0         # Contador para asignar IDs únicos
@@ -205,7 +223,7 @@ def create_chroma_collection(chunks):
 
 
 
-def retrieve_context(collection, query, k=4):
+def retrieve_context(collection, query, k=10):
     """
     Recupera los k chunks más similares a la pregunta.
     Devuelve tanto el texto como la metadata asociada.
@@ -245,36 +263,36 @@ Pregunta:
 # INTERFAZ
 # ============================================================
 
-st.title("📄 Chat con PDF + ChromaDB + Gemini")
+st.title("📄 Chat con Documentos + ChromaDB + Gemini")
 
-uploaded_pdf = st.file_uploader("Sube un PDF", type="pdf")
+uploaded_file = st.file_uploader("Sube un documento", type=["pdf", "docx", "txt", "pptx"])
 
-# 🔄 Detectar cambio de PDF y resetear estado
-if uploaded_pdf:
-    current_hash = hash_pdf(uploaded_pdf)
+# 🔄 Detectar cambio de archivo y resetear estado
+if uploaded_file:
+    current_hash = hash_file(uploaded_file)
 
-    if st.session_state.pdf_hash != current_hash:
-        st.session_state.pdf_hash = current_hash
-        st.session_state.pdf_processed = False
+    if st.session_state.file_hash != current_hash:
+        st.session_state.file_hash = current_hash
+        st.session_state.file_processed = False
         st.session_state.collection = None
 
 # ------------------------------
-# BOTÓN PROCESAR PDF
+# BOTÓN PROCESAR DOCUMENTO
 # ------------------------------
-if uploaded_pdf and not st.session_state.pdf_processed:
-    if st.button("📥 Procesar PDF"):
-        with st.spinner("Procesando PDF..."):
-            text = extract_text_from_pdf(uploaded_pdf)
+if uploaded_file and not st.session_state.file_processed:
+    if st.button("📥 Procesar Documento"):
+        with st.spinner("Procesando documento..."):
+            text = extract_text_from_file(uploaded_file)
             chunks = chunk_text(text)
             st.session_state.collection = create_chroma_collection(chunks)
-            st.session_state.pdf_processed = True
+            st.session_state.file_processed = True
 
-        st.success(f"PDF procesado ✅ ({len(chunks)} fragmentos)")
+        st.success(f"Documento procesado ✅ ({len(chunks)} fragmentos)")
 
 # ------------------------------
 # SECCIÓN DE PREGUNTAS
 # ------------------------------
-if st.session_state.pdf_processed and st.session_state.collection:
+if st.session_state.file_processed and st.session_state.collection:
     st.divider()
     st.subheader("❓ Pregunta al documento")
 
@@ -284,8 +302,29 @@ if st.session_state.pdf_processed and st.session_state.collection:
         with st.spinner("Buscando respuesta..."):
             results = retrieve_context(st.session_state.collection, question)
 
-            # Unimos los documentos para Gemini
-            context_text = "\n\n".join(results["documents"][0])
+            # Filtrar chunks por umbral de similitud (distancia coseno < 0.3)
+            threshold = 0.3
+            distances = results["distances"][0]
+            documents = results["documents"][0]
+            metadatas = results["metadatas"][0]
+
+            filtered_docs = [doc for doc, dist in zip(documents, distances) if dist < threshold]
+            filtered_metas = [meta for meta, dist in zip(metadatas, distances) if dist < threshold]
+            filtered_distances = [dist for dist in distances if dist < threshold]
+
+            # Asegurar al menos 2 chunks
+            if len(filtered_docs) < 2:
+                # Tomar los top 2 más relevantes
+                sorted_indices = sorted(range(len(distances)), key=lambda i: distances[i])
+                top2_docs = [documents[i] for i in sorted_indices[:2]]
+                top2_metas = [metadatas[i] for i in sorted_indices[:2]]
+                top2_distances = [distances[i] for i in sorted_indices[:2]]
+                filtered_docs = top2_docs
+                filtered_metas = top2_metas
+                filtered_distances = top2_distances
+
+            # Unimos los documentos filtrados para Gemini
+            context_text = "\n\n".join(filtered_docs)
 
             answer = ask_gemini(context_text, question)
 
@@ -295,15 +334,14 @@ if st.session_state.pdf_processed and st.session_state.collection:
         # ------------------------------
         # DETALLE DEL CONTEXTO USADO
         # ------------------------------
-        with st.expander("📚 Contexto usado (detallado)"):
-            for i, (doc, meta) in enumerate(
-                zip(results["documents"][0], results["metadatas"][0])
-            ):
+        with st.expander(f"📚 Contexto usado ({len(filtered_docs)} chunks filtrados)"):
+            for i, (doc, meta) in enumerate(zip(filtered_docs, filtered_metas)):
                 st.markdown(f"""
-**Chunk #{meta['chunk_index']}**
-- 📍 Inicio en texto: `{meta['start_index']}`
-- 📏 Tamaño: `{meta['chunk_size']}` caracteres
+                **Chunk #{meta['chunk_index']}**
+                - 📍 Inicio en texto: `{meta['start_index']}`
+                - 📏 Tamaño: `{meta['chunk_size']}` caracteres
+                - 📊 Similitud: `{1 - filtered_distances[i]:.3f}`
 
-```text
-{doc}
-""")
+                ```text
+                {doc}
+                """)
