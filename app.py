@@ -13,7 +13,7 @@ from pptx import Presentation
 # ============================================================
 # CONFIGURACIÓN GENERAL
 # ============================================================
-st.set_page_config(page_title="Chat con Documentos con Gemini")
+st.set_page_config(page_title="Chat basado en Documentos con Gemini")
 
 # Carga variables de entorno desde .env
 # Aquí se espera GOOGLE_API_KEY=xxxx
