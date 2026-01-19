@@ -7,6 +7,10 @@ import google.generativeai as genai
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
+# Imports para documento word y html
+import docx
+from bs4 import BeautifulSoup
+import io
 
 # ============================================================
 # CONFIGURACIÓN GENERAL
@@ -39,24 +43,49 @@ if "pdf_hash" not in st.session_state:
     st.session_state.pdf_hash = None
 
 # ============================================================
+# INICIALIZACIÓN DEL HISTORIAL DE CHAT
+# ============================================================
+# Verificamos si la variable 'chat_history' ya existe en la sesión.
+# st.session_state es la "memoria" que no se borra al recargar la app.
+if "chat_history" not in st.session_state:
+    # Si no existe, la creamos como una lista vacía [].
+    # Aquí iremos guardando diccionarios con las preguntas y respuestas.
+    st.session_state.chat_history = []
+
+# ============================================================
 # FUNCIONES
 # ============================================================
 def hash_pdf(file) -> str:
     return hashlib.sha256(file.getvalue()).hexdigest()
 
-def extract_text_from_pdf(pdf_file):
-    """
-    Extrae texto de un PDF digital (no escaneado).
-    Incluye el número de página como marcador.
-    """
-    reader = PdfReader(pdf_file)
+def get_files_text(uploaded_file):
     text = ""
+    # --- ERROR COMÚN: Si tienes "for file in uploaded_file:" AQUÍ, BÓRRALO ---
+    
+    # Obtenemos la extensión directo del archivo único
+    file_extension = uploaded_file.name.split('.')[-1].lower()
 
-    for i, page in enumerate(reader.pages):
-        content = page.extract_text()
-        if content:
-            text += f"\n[Página {i+1}]\n{content}"
-
+    try:
+        if file_extension == 'pdf':
+            reader = PdfReader(uploaded_file)
+            for page in reader.pages:
+                text += page.extract_text() or ""
+                
+        elif file_extension == 'docx':
+            doc = docx.Document(uploaded_file)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+                
+        elif file_extension == 'txt':
+            text += uploaded_file.getvalue().decode("utf-8")
+            
+        elif file_extension == 'html':
+            soup = BeautifulSoup(uploaded_file, 'html.parser')
+            text += soup.get_text()
+            
+    except Exception as e:
+        st.error(f"Error leyendo el archivo: {e}")
+        
     return text
 
 
@@ -247,11 +276,11 @@ Pregunta:
 
 st.title("📄 Chat con PDF + ChromaDB + Gemini")
 
-uploaded_pdf = st.file_uploader("Sube un PDF", type="pdf")
+uploaded_file = st.file_uploader("Sube un PDF", type=["pdf", "txt", "docx", "html"])
 
 # 🔄 Detectar cambio de PDF y resetear estado
-if uploaded_pdf:
-    current_hash = hash_pdf(uploaded_pdf)
+if uploaded_file:
+    current_hash = hash_pdf(uploaded_file)
 
     if st.session_state.pdf_hash != current_hash:
         st.session_state.pdf_hash = current_hash
@@ -261,19 +290,19 @@ if uploaded_pdf:
 # ------------------------------
 # BOTÓN PROCESAR PDF
 # ------------------------------
-if uploaded_pdf and not st.session_state.pdf_processed:
+if uploaded_file and not st.session_state.pdf_processed:
     if st.button("📥 Procesar PDF"):
         with st.spinner("Procesando PDF..."):
-            text = extract_text_from_pdf(uploaded_pdf)
+            text = get_files_text(uploaded_file)
             chunks = chunk_text(text)
             st.session_state.collection = create_chroma_collection(chunks)
             st.session_state.pdf_processed = True
 
         st.success(f"PDF procesado ✅ ({len(chunks)} fragmentos)")
 
-# ------------------------------
-# SECCIÓN DE PREGUNTAS
-# ------------------------------
+# ============================================================
+# SECCIÓN DE PREGUNTAS (ÁREA PRINCIPAL)
+# ============================================================
 if st.session_state.pdf_processed and st.session_state.collection:
     st.divider()
     st.subheader("❓ Pregunta al documento")
@@ -282,28 +311,51 @@ if st.session_state.pdf_processed and st.session_state.collection:
 
     if st.button("🤖 Preguntar") and question:
         with st.spinner("Buscando respuesta..."):
+            # 1. Buscamos en ChromaDB
             results = retrieve_context(st.session_state.collection, question)
-
-            # Unimos los documentos para Gemini
             context_text = "\n\n".join(results["documents"][0])
-
+            
+            # 2. Obtenemos respuesta de Gemini
             answer = ask_gemini(context_text, question)
 
-        st.subheader("🤖 Respuesta")
-        st.write(answer)
+            # 3. MOSTRAR RESPUESTA EN EL CENTRO
+            st.subheader("🤖 Respuesta")
+            st.write(answer)
 
-        # ------------------------------
-        # DETALLE DEL CONTEXTO USADO
-        # ------------------------------
-        with st.expander("📚 Contexto usado (detallado)"):
-            for i, (doc, meta) in enumerate(
-                zip(results["documents"][0], results["metadatas"][0])
-            ):
-                st.markdown(f"""
-**Chunk #{meta['chunk_index']}**
-- 📍 Inicio en texto: `{meta['start_index']}`
-- 📏 Tamaño: `{meta['chunk_size']}` caracteres
+            # 4. MOSTRAR CONTEXTO (Limpio y ordenado)
+            with st.expander("📚 Ver detalles del contexto"):
+                for i, (doc, meta) in enumerate(zip(results["documents"][0], results["metadatas"][0])):
+                    st.markdown(f"**Fragmento #{meta['chunk_index']}**")
+                    st.text(doc)
+                    st.divider()
 
-```text
-{doc}
-""")
+            # 5. GUARDADO INTELIGENTE
+            # Verificamos si es una pregunta repetida para no llenar el historial de duplicados
+            should_save = True
+            if len(st.session_state.chat_history) > 0:
+                if question == st.session_state.chat_history[-1]["q"]:
+                    should_save = False
+            
+            if should_save:
+                # Guardamos en la lista
+                st.session_state.chat_history.append({"q": question, "a": answer})
+                
+                # 🔥 EL TRUCO FINAL: Forzamos la recarga de la página
+                # Esto hace que la barra lateral se actualice AL INSTANTE.
+                st.rerun()
+
+# ============================================================
+# BARRA LATERAL (HISTORIAL)
+# ============================================================
+with st.sidebar:
+    st.header("⏳ Historial de Sesión")
+    
+    if st.session_state.chat_history:
+        # Mostramos el historial (lo más nuevo arriba)
+        for chat in reversed(st.session_state.chat_history):
+            st.markdown(f"**🧑 Tú:** {chat['q']}")
+            st.info(f"**🤖 Bot:** {chat['a']}")
+            st.divider()
+    else:
+        st.write("El historial está vacío.")
+        
