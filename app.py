@@ -5,305 +5,175 @@ import chromadb
 import google.generativeai as genai
 
 from pypdf import PdfReader
+from docx import Document
+from pptx import Presentation
 from sentence_transformers import SentenceTransformer
 from dotenv import load_dotenv
 
 # ============================================================
-# CONFIGURACIÓN GENERAL
+# 1. CONFIGURACIÓN Y MODELOS
 # ============================================================
-st.set_page_config(page_title="Chat PDF con Gemini")
+st.set_page_config(page_title="Multi-Doc AI Assistant", layout="wide")
 
-# Carga variables de entorno desde .env
-# Aquí se espera GOOGLE_API_KEY=xxxx
 load_dotenv()
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-# Modelo de embeddings local
-# Se puede cambiar por otros modelos de sentence-transformers
-EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-# Se Inicializa el Cliente de ChromaDB
-client = chromadb.Client()
-
-# ============================================================
-# SESSION STATE
-# ============================================================
-# session_state nos permite "recordar" cosas entre reruns.
-if "collection" not in st.session_state:
-    st.session_state.collection = None
-
-if "pdf_processed" not in st.session_state:
-    st.session_state.pdf_processed = False
-
-if "pdf_hash" not in st.session_state:
-    st.session_state.pdf_hash = None
+EMBEDDING_MODEL = load_embedding_model()
+CHROMA_CLIENT = chromadb.Client()
 
 # ============================================================
-# FUNCIONES
+# 2. EXTRACTORES DE TEXTO (PDF, DOCX, PPTX, TXT)
 # ============================================================
-def hash_pdf(file) -> str:
-    return hashlib.sha256(file.getvalue()).hexdigest()
 
-def extract_text_from_pdf(pdf_file):
-    """
-    Extrae texto de un PDF digital (no escaneado).
-    Incluye el número de página como marcador.
-    """
-    reader = PdfReader(pdf_file)
+def extract_text_from_pdf(file):
+    reader = PdfReader(file)
     text = ""
-
     for i, page in enumerate(reader.pages):
         content = page.extract_text()
-        if content:
-            text += f"\n[Página {i+1}]\n{content}"
-
+        if content: text += f"\n[Página {i+1}]\n{content}"
     return text
 
+def extract_text_from_docx(file):
+    doc = Document(file)
+    return "\n".join([p.text for p in doc.paragraphs])
 
-def chunk_text(text):
+def extract_text_from_pptx(file):
+    prs = Presentation(file)
+    text = []
+    for i, slide in enumerate(prs.slides):
+        slide_txt = f"\n[Diapositiva {i+1}]\n"
+        for shape in slide.shapes:
+            if hasattr(shape, "text"): slide_txt += shape.text + " "
+        text.append(slide_txt)
+    return "\n".join(text)
+
+def extract_text_from_txt(file):
+    try:
+        return file.getvalue().decode("utf-8")
+    except:
+        return file.getvalue().decode("latin-1")
+
+def get_document_text(uploaded_file):
+    ext = uploaded_file.name.lower()
+    if ext.endswith(".pdf"): return extract_text_from_pdf(uploaded_file)
+    if ext.endswith(".docx"): return extract_text_from_docx(uploaded_file)
+    if ext.endswith(".pptx"): return extract_text_from_pptx(uploaded_file)
+    if ext.endswith(".txt"): return extract_text_from_txt(uploaded_file)
+    return None
+
+# ============================================================
+# 3. PROCESAMIENTO RAG MEJORADO (CON METADATOS)
+# ============================================================
+
+def chunk_text(text, size=600, overlap=120):
     """
-    Divide un texto largo en fragmentos (chunks) con solapamiento.
-
-    chunk_size:
-        - Número máximo de caracteres por fragmento
-        - Valores típicos: 400–800
-        - Más grande = más contexto, pero embeddings más caros
-
-    overlap:
-        - Número de caracteres que se repiten entre chunks consecutivos
-        - Evita que una idea quede cortada entre fragmentos
-        - Regla común: 10–20% del chunk_size
-
-    Devuelve:
-        Lista de diccionarios, cada uno representando un chunk con:
-        - id           -> identificador único
-        - content      -> texto del fragmento
-        - start_index  -> posición donde comienza en el texto original
-        - size         -> longitud real del chunk
+    Ahora devuelve una lista de diccionarios con contenido y posición original.
     """
-    chunk_size = 500 
-    overlap = 100
-    chunks = []          # Aquí guardaremos todos los fragmentos
-    start = 0            # Puntero que indica desde dónde empezamos a cortar
-    chunk_id = 0         # Contador para asignar IDs únicos
-
-    # El while se ejecuta mientras NO hayamos llegado al final del texto
+    chunks = []
+    start = 0
+    chunk_id = 0
     while start < len(text):
-
-        # 1️⃣ Cortamos el texto desde 'start' hasta 'start + chunk_size'
-        #    Python corta automáticamente si se pasa del largo del texto
-        chunk_text = text[start:start + chunk_size]
-
-        # 2️⃣ Guardamos el chunk junto con metadata útil
+        end = start + size
+        chunk_content = text[start:end]
         chunks.append({
-            "id": f"chunk_{chunk_id}",   # Identificador único del fragmento
-            "content": chunk_text,       # Texto real del fragmento
-            "start_index": start,        # Posición en el texto original
-            "size": len(chunk_text)      # Tamaño real del fragmento
+            "id": f"chunk_{chunk_id}",
+            "content": chunk_content,
+            "start_index": start,
+            "size": len(chunk_content)
         })
-
-        # 3️⃣ Incrementamos el ID para el próximo chunk
+        start += size - overlap
         chunk_id += 1
-
-        # 4️⃣ Avanzamos el puntero 'start'
-        #    No avanzamos chunk_size completo,
-        #    sino (chunk_size - overlap) para que haya solapamiento
-        #
-        #    Ejemplo:
-        #    chunk_size = 500
-        #    overlap    = 100
-        #    start avanza 400 caracteres
-        #
-        #    Los últimos 100 caracteres del chunk actual
-        #    aparecerán también al inicio del siguiente
-        start += chunk_size - overlap
-
-    # 5️⃣ Cuando start >= len(text), el while termina
-    #    y devolvemos todos los fragmentos creados
     return chunks
 
-
-
-def create_chroma_collection(chunks):
-    """
-    Crea una colección nueva en ChromaDB a partir de los chunks generados.
-
-    Cada chunk se almacena junto con:
-    - su embedding (vector numérico)
-    - su texto original
-    - metadata útil
-    """
-
-    # ------------------------------
-    # 1️⃣ Borrado defensivo
-    # ------------------------------
-    # Si ya existe una colección con el mismo nombre ("pdf_rag"),
-    try:
-        client.delete_collection("pdf_rag")
-    except:
-        # Si la colección no existe, Chroma lanza error.
-        # Lo ignoramos porque es un caso esperado.
-        pass
-
-    # ------------------------------
-    # 2️⃣ Crear colección nueva
-    # ------------------------------
-    # Aquí Chroma crea:
-    # - una tabla de documentos
-    # - un índice vectorial
-    # - espacio para metadatos
-    collection = client.create_collection(name="pdf_rag")
-
-    # ------------------------------
-    # 3️⃣ Separar texto de metadata
-    # ------------------------------
-    # Extraemos SOLO el contenido textual de cada chunk.
-    # Esto es lo que se convertirá en embeddings.
+def create_collection(chunks):
+    try: CHROMA_CLIENT.delete_collection("multi_doc_rag")
+    except: pass
+    
+    collection = CHROMA_CLIENT.create_collection(name="multi_doc_rag")
+    
+    # Preparamos los datos para ChromaDB
     texts = [c["content"] for c in chunks]
-
-    # ------------------------------
-    # 4️⃣ Generar embeddings
-    # ------------------------------
-    # El modelo de SentenceTransformers convierte cada texto
-    # en un vector numérico.
-    #
-    # Cada vector representa el significado del chunk.
-    embeddings = EMBEDDING_MODEL.encode(texts)
-
-    # ------------------------------
-    # 5️⃣ Insertar datos en Chroma
-    # ------------------------------
+    ids = [c["id"] for c in chunks]
+    metadatas = [{"start_index": c["start_index"], "chunk_index": i} for i, c in enumerate(chunks)]
+    
+    embeddings = EMBEDDING_MODEL.encode(texts).tolist()
+    
     collection.add(
-        # Texto original del chunk
         documents=texts,
-
-        # Vectores que permiten búsqueda semántica
-        embeddings=embeddings.tolist(),
-
-        # IDs únicos
-        # Sirven para identificar cada chunk internamente
-        ids=[c["id"] for c in chunks],
-
-        # Metadata asociada a cada chunk
-        metadatas=[
-            {
-                "chunk_index": i,         # Orden del chunk
-                "start_index": c["start_index"],  # Posición en el texto original
-                "chunk_size": c["size"]   # Tamaño real del fragmento
-            }
-            for i, c in enumerate(chunks)
-        ]
+        embeddings=embeddings,
+        ids=ids,
+        metadatas=metadatas
     )
-
-    # ------------------------------
-    # 6️⃣ Devolver colección lista
-    # ------------------------------
-    # La colección ya puede:
-    # - recibir queries (preguntas)
-    # - devolver chunks relevantes
     return collection
 
-
-
-def retrieve_context(collection, query, k=4):
-    """
-    Recupera los k chunks más similares a la pregunta.
-    Devuelve tanto el texto como la metadata asociada.
-    """
-    query_embedding = EMBEDDING_MODEL.encode([query])
-
-    results = collection.query(
-        query_embeddings=query_embedding.tolist(),
-        n_results=k
-    )
-
-    return results
-
-
-def ask_gemini(context, question):
-    """
-    Llama a Gemini usando el contexto recuperado.
-    El prompt fuerza comportamiento RAG (no inventar).
-    """
-    model = genai.GenerativeModel("models/gemini-2.5-flash-lite")
-
-    prompt = f"""
-Eres un asistente que responde SOLO con la información del contexto.
-Si la respuesta no está en el contexto, di: "No se encuentra en el documento".
-
-Contexto:
-{context}
-
-Pregunta:
-{question}
-"""
-
-    response = model.generate_content(prompt)
-    return response.text
-
 # ============================================================
-# INTERFAZ
+# 4. INTERFAZ DE USUARIO (STREAMLIT)
 # ============================================================
 
-st.title("📄 Chat con PDF + ChromaDB + Gemini")
+st.title("🤖 Asistente Documental Inteligente")
 
-uploaded_pdf = st.file_uploader("Sube un PDF", type="pdf")
+if "processed" not in st.session_state:
+    st.session_state.update({"processed": False, "collection": None, "file_hash": None})
 
-# 🔄 Detectar cambio de PDF y resetear estado
-if uploaded_pdf:
-    current_hash = hash_pdf(uploaded_pdf)
+with st.sidebar:
+    st.header("Carga de Documento")
+    uploaded_file = st.file_uploader("Sube tu archivo", type=["pdf", "docx", "pptx", "txt"])
+    
+    if uploaded_file:
+        file_hash = hashlib.sha256(uploaded_file.getvalue()).hexdigest()
+        if st.session_state.file_hash != file_hash:
+            st.session_state.update({"processed": False, "file_hash": file_hash})
 
-    if st.session_state.pdf_hash != current_hash:
-        st.session_state.pdf_hash = current_hash
-        st.session_state.pdf_processed = False
-        st.session_state.collection = None
+    if uploaded_file and not st.session_state.processed:
+        if st.button("Procesar Archivo"):
+            with st.spinner("Analizando y fragmentando contenido..."):
+                text = get_document_text(uploaded_file)
+                if text:
+                    chunks = chunk_text(text)
+                    st.session_state.collection = create_collection(chunks)
+                    st.session_state.processed = True
+                    st.success(f"Archivo procesado: {len(chunks)} fragmentos generados.")
 
-# ------------------------------
-# BOTÓN PROCESAR PDF
-# ------------------------------
-if uploaded_pdf and not st.session_state.pdf_processed:
-    if st.button("📥 Procesar PDF"):
-        with st.spinner("Procesando PDF..."):
-            text = extract_text_from_pdf(uploaded_pdf)
-            chunks = chunk_text(text)
-            st.session_state.collection = create_chroma_collection(chunks)
-            st.session_state.pdf_processed = True
-
-        st.success(f"PDF procesado ✅ ({len(chunks)} fragmentos)")
-
-# ------------------------------
-# SECCIÓN DE PREGUNTAS
-# ------------------------------
-if st.session_state.pdf_processed and st.session_state.collection:
+if st.session_state.processed:
     st.divider()
-    st.subheader("❓ Pregunta al documento")
+    query = st.text_input("Haz una pregunta sobre el documento:")
+    
+    if query:
+        with st.spinner("Buscando en la base de datos vectorial..."):
+            # 1. Recuperar contexto y metadatos
+            query_emb = EMBEDDING_MODEL.encode([query]).tolist()
+            results = st.session_state.collection.query(query_embeddings=query_emb, n_results=4)
+            
+            context = "\n\n".join(results["documents"][0])
+            
+            # 2. Llamada a Gemini
+            try:
+                model = genai.GenerativeModel("models/gemini-2.5-flash-lite")
+                prompt = f"""
+                Eres un asistente experto. Responde la pregunta basándote únicamente en el contexto proporcionado.
+                Si la respuesta no está en el contexto, indica que no se encuentra en el documento.
 
-    question = st.text_input("Escribe tu pregunta")
+                Contexto:
+                {context}
 
-    if st.button("🤖 Preguntar") and question:
-        with st.spinner("Buscando respuesta..."):
-            results = retrieve_context(st.session_state.collection, question)
-
-            # Unimos los documentos para Gemini
-            context_text = "\n\n".join(results["documents"][0])
-
-            answer = ask_gemini(context_text, question)
-
-        st.subheader("🤖 Respuesta")
-        st.write(answer)
-
-        # ------------------------------
-        # DETALLE DEL CONTEXTO USADO
-        # ------------------------------
-        with st.expander("📚 Contexto usado (detallado)"):
-            for i, (doc, meta) in enumerate(
-                zip(results["documents"][0], results["metadatas"][0])
-            ):
-                st.markdown(f"""
-**Chunk #{meta['chunk_index']}**
-- 📍 Inicio en texto: `{meta['start_index']}`
-- 📏 Tamaño: `{meta['chunk_size']}` caracteres
-
-```text
-{doc}
-""")
+                Pregunta:
+                {query}
+                """
+                response = model.generate_content(prompt)
+                
+                st.subheader(" Respuesta:")
+                st.write(response.text)
+                
+                # 3. MOSTRAR CHUNKS (Igual al código original)
+                with st.expander(" Fuentes y Contexto Utilizado"):
+                    for i, (doc, meta) in enumerate(zip(results["documents"][0], results["metadatas"][0])):
+                        st.markdown(f"**Fragmento #{meta['chunk_index']}**")
+                        st.caption(f"📍 Posición inicial en texto: {meta['start_index']}")
+                        st.info(doc)
+                        
+            except Exception as e:
+                st.error(f"Error en la comunicación con la IA: {e}")
