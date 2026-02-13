@@ -291,14 +291,14 @@ if uploaded_file:
 # BOTÓN PROCESAR PDF
 # ------------------------------
 if uploaded_file and not st.session_state.pdf_processed:
-    if st.button("📥 Procesar PDF"):
-        with st.spinner("Procesando PDF..."):
+    if st.button("📥 Procesar "):
+        with st.spinner("Procesando ..."):
             text = get_files_text(uploaded_file)
             chunks = chunk_text(text)
             st.session_state.collection = create_chroma_collection(chunks)
             st.session_state.pdf_processed = True
 
-        st.success(f"PDF procesado ✅ ({len(chunks)} fragmentos)")
+        st.success(f" procesado ✅ ({len(chunks)} fragmentos)")
 
 # ============================================================
 # SECCIÓN DE PREGUNTAS (ÁREA PRINCIPAL)
@@ -358,4 +358,3 @@ with st.sidebar:
             st.divider()
     else:
         st.write("El historial está vacío.")
-        
